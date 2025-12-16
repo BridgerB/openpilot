@@ -24,7 +24,6 @@ from openpilot.system.version import get_version
 from openpilot.tools.lib.helpers import RE
 from openpilot.tools.lib.logreader import LogReader
 from msgq.visionipc import VisionIpcServer, VisionStreamType
-from openpilot.common.transformations.camera import DEVICE_CAMERAS
 
 SentinelType = log.Sentinel.SentinelType
 
@@ -99,11 +98,14 @@ class TestLoggerd:
     return sent_msgs
 
   def _publish_camera_and_audio_messages(self, num_segs=1, segment_length=5):
-    d = DEVICE_CAMERAS[("tici", "ar0231")]
+    # Use small frame sizes for testing (width, height, size, stride, uv_offset)
+    # NV12 format: size = stride * height * 1.5, uv_offset = stride * height
+    w, h = 320, 240
+    frame_spec = (w, h, w * h * 3 // 2, w, w * h)
     streams = [
-      (VisionStreamType.VISION_STREAM_ROAD, (d.fcam.width, d.fcam.height, 2048 * 2346, 2048, 2048 * 1216), "roadCameraState"),
-      (VisionStreamType.VISION_STREAM_DRIVER, (d.dcam.width, d.dcam.height, 2048 * 2346, 2048, 2048 * 1216), "driverCameraState"),
-      (VisionStreamType.VISION_STREAM_WIDE_ROAD, (d.ecam.width, d.ecam.height, 2048 * 2346, 2048, 2048 * 1216), "wideRoadCameraState"),
+      (VisionStreamType.VISION_STREAM_ROAD, frame_spec, "roadCameraState"),
+      (VisionStreamType.VISION_STREAM_DRIVER, frame_spec, "driverCameraState"),
+      (VisionStreamType.VISION_STREAM_WIDE_ROAD, frame_spec, "wideRoadCameraState"),
     ]
 
     pm = messaging.PubMaster([s for _, _, s in streams] + ["rawAudioData"])
