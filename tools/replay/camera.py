@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import logging
 import queue
 import threading
+import traceback
 from enum import Enum, auto
 from typing import Optional
 
@@ -9,7 +11,20 @@ import numpy as np
 from msgq.visionipc import VisionIpcServer, VisionStreamType
 from openpilot.tools.lib.framereader import FrameReader
 
+log = logging.getLogger("replay")
+
 BUFFER_COUNT = 40
+
+
+def get_nv12_info(width: int, height: int) -> tuple[int, int, int]:
+  """Calculate NV12 buffer parameters matching C++ VENUS macros."""
+  # VENUS_Y_STRIDE for NV12: align to 128
+  nv12_width = (width + 127) & ~127
+  # VENUS_Y_SCANLINES for NV12: align to 32
+  nv12_height = (height + 31) & ~31
+  # Buffer size from v4l2_format (matches C++ implementation)
+  nv12_buffer_size = 2346 * nv12_width
+  return nv12_width, nv12_height, nv12_buffer_size
 
 
 class CameraType(Enum):
@@ -31,6 +46,7 @@ class Camera:
     self.stream_type = CAMERA_STREAM_TYPES[cam_type]
     self.width = 0
     self.height = 0
+    self.nv12_buffer_size = 0  # Padded buffer size for VisionIPC
     self.thread: Optional[threading.Thread] = None
     self.queue: queue.Queue = queue.Queue()
     self.cached_frames: dict[int, np.ndarray] = {}
@@ -71,8 +87,13 @@ class CameraServer:
       cam.cached_frames.clear()
 
       if cam.width > 0 and cam.height > 0:
-        print(f"camera[{cam.type.name}] frame size {cam.width}x{cam.height}")
-        self._vipc_server.create_buffers(cam.stream_type, BUFFER_COUNT, cam.width, cam.height)
+        nv12_width, nv12_height, nv12_buffer_size = get_nv12_info(cam.width, cam.height)
+        cam.nv12_buffer_size = nv12_buffer_size
+        log.info(f"camera[{cam.type.name}] frame size {cam.width}x{cam.height}, nv12 buffer size {nv12_buffer_size}")
+        self._vipc_server.create_buffers_with_sizes(
+          cam.stream_type, BUFFER_COUNT, cam.width, cam.height,
+          nv12_buffer_size, nv12_width, nv12_width * nv12_height
+        )
 
         if cam.thread is None or not cam.thread.is_alive():
           cam.thread = threading.Thread(
@@ -108,18 +129,20 @@ class CameraServer:
         # Get the frame
         yuv = self._get_frame(cam, fr, segment_id, frame_id)
         if yuv is not None:
-          # Send via VisionIPC
+          # Send via VisionIPC - flatten to 1D and pad to match buffer size
           timestamp_sof = eidx.timestampSof
           timestamp_eof = eidx.timestampEof
-          self._vipc_server.send(cam.stream_type, yuv.data, frame_id, timestamp_sof, timestamp_eof)
-        else:
-          print(f"camera[{cam.type.name}] failed to get frame: {segment_id}")
+          yuv_bytes = yuv.flatten().tobytes()
+          # Pad to match the NV12 buffer size expected by VisionIPC
+          if len(yuv_bytes) < cam.nv12_buffer_size:
+            yuv_bytes = yuv_bytes + bytes(cam.nv12_buffer_size - len(yuv_bytes))
+          self._vipc_server.send(cam.stream_type, yuv_bytes, frame_id, timestamp_sof, timestamp_eof)
 
         # Prefetch next frame
         self._get_frame(cam, fr, segment_id + 1, frame_id + 1)
 
       except Exception as e:
-        print(f"camera[{cam.type.name}] error: {e}")
+        log.error(f"camera[{cam.type.name}] error: {e}\n{traceback.format_exc()}")
 
       with self._publishing_lock:
         self._publishing -= 1
@@ -142,7 +165,7 @@ class CameraServer:
           del cam.cached_frames[oldest]
         return yuv
     except Exception as e:
-      print(f"Failed to decode frame {frame_id}: {e}")
+      log.warning(f"Failed to decode frame {frame_id}: {e}")
     return None
 
   def push_frame(self, cam_type: CameraType, fr: FrameReader, event) -> None:

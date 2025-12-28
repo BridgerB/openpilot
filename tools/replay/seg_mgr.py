@@ -224,19 +224,20 @@ class SegmentManager:
         return seg_data
 
     # Load frame readers based on flags
+    # VisionIPC expects NV12 format
     try:
       if segment.camera_path and not (self._flags & ReplayFlags.NO_VIPC):
         if not (self._flags & ReplayFlags.QCAMERA):
-          seg_data.frame_readers['road'] = FrameReader(segment.camera_path)
+          seg_data.frame_readers['road'] = FrameReader(segment.camera_path, pix_fmt='nv12')
 
       if segment.dcamera_path and (self._flags & ReplayFlags.DCAM):
-        seg_data.frame_readers['driver'] = FrameReader(segment.dcamera_path)
+        seg_data.frame_readers['driver'] = FrameReader(segment.dcamera_path, pix_fmt='nv12')
 
       if segment.ecamera_path and (self._flags & ReplayFlags.ECAM):
-        seg_data.frame_readers['wide'] = FrameReader(segment.ecamera_path)
+        seg_data.frame_readers['wide'] = FrameReader(segment.ecamera_path, pix_fmt='nv12')
 
       if segment.qcamera_path and (self._flags & ReplayFlags.QCAMERA):
-        seg_data.frame_readers['qcam'] = FrameReader(segment.qcamera_path)
+        seg_data.frame_readers['qcam'] = FrameReader(segment.qcamera_path, pix_fmt='nv12')
     except Exception as e:
       log.warning(f"failed to load frames for segment {seg_num}: {e}")
       # Don't fail the whole segment, just skip frames

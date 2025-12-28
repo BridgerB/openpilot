@@ -277,6 +277,25 @@ class ConsoleUI:
     win.addstr(1, 25, "PLAYBACK: ")
     self._add_str(win, f"{self.replay.speed:.1f}x", Color.BRIGHT_WHITE, True)
 
+    # Timing stats
+    stats = self.replay.stats
+    buffer_ms = stats.time_buffer_ns / 1_000_000
+
+    # Color code the buffer based on how far ahead/behind we are
+    if buffer_ms >= 0:
+      buffer_color = Color.GREEN
+    elif buffer_ms >= -10:
+      buffer_color = Color.YELLOW
+    else:
+      buffer_color = Color.RED
+
+    win.addstr(2, 0, "TIMING: buffer: ")
+    self._add_str(win, f"{buffer_ms:+.1f}ms", buffer_color)
+    win.addstr(f" | lags(30s): {stats.lag_count}")
+    if stats.worst_lag_ns < 0:
+      worst_ms = stats.worst_lag_ns / 1_000_000
+      win.addstr(f" | worst: {worst_ms:.0f}ms")
+
     win.refresh()
 
   def _update_timeline(self) -> None:

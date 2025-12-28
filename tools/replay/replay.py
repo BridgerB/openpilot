@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
+import argparse
 import logging
+import resource
+import sys
 import threading
 import time
-from enum import IntFlag
+from collections import deque
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import cereal.messaging as messaging
-from cereal import log as capnp_log
 from cereal.services import SERVICE_LIST
 from openpilot.common.params import Params
 
@@ -15,6 +18,41 @@ from openpilot.tools.replay.seg_mgr import SegmentManager, ReplayFlags
 from openpilot.tools.replay.timeline import Timeline, FindFlag
 
 log = logging.getLogger("replay")
+
+
+@dataclass
+class ReplayStats:
+  """Tracks timing statistics for playback observability."""
+  time_buffer_ns: int = 0  # Current time_diff (positive = ahead of schedule)
+  _lag_events: deque = field(default_factory=deque)  # (timestamp, lag_ns)
+  _lag_threshold_ns: int = -10_000_000  # -10ms
+  _window_secs: float = 30.0
+
+  def record_timing(self, time_diff_ns: int) -> None:
+    """Record a timing measurement. Called from _publish_events."""
+    self.time_buffer_ns = time_diff_ns
+    now = time.monotonic()
+
+    # Record if it's a lag (behind schedule by more than threshold)
+    if time_diff_ns < self._lag_threshold_ns:
+      self._lag_events.append((now, time_diff_ns))
+
+    # Prune entries older than window
+    cutoff = now - self._window_secs
+    while self._lag_events and self._lag_events[0][0] < cutoff:
+      self._lag_events.popleft()
+
+  @property
+  def lag_count(self) -> int:
+    """Number of lag events in the rolling window."""
+    return len(self._lag_events)
+
+  @property
+  def worst_lag_ns(self) -> int:
+    """Most negative time_diff in the rolling window (0 if none)."""
+    if not self._lag_events:
+      return 0
+    return min(lag for _, lag in self._lag_events)
 
 DEMO_ROUTE = "a2a0ccea32023010|2023-07-27--13-01-19"
 
@@ -59,6 +97,9 @@ class Replay:
     self._max_seconds = 0.0
     self._speed = 1.0
     self._car_fingerprint = ""
+
+    # Timing stats for observability
+    self._stats = ReplayStats()
 
     # Callbacks
     self.on_segments_merged: Optional[Callable[[], None]] = None
@@ -128,6 +169,10 @@ class Replay:
   @property
   def car_fingerprint(self) -> str:
     return self._car_fingerprint
+
+  @property
+  def stats(self) -> ReplayStats:
+    return self._stats
 
   @property
   def segment_cache_limit(self) -> int:
@@ -363,6 +408,9 @@ class Replay:
       current_nanos = time.monotonic_ns()
       time_diff = (evt.logMonoTime - evt_start_ts) / self._speed - (current_nanos - loop_start_ts)
 
+      # Record timing stats for observability
+      self._stats.record_timing(int(time_diff))
+
       # Reset timing if needed
       if time_diff < -1e9 or time_diff >= 1e9 or self._speed != prev_speed:
         evt_start_ts = evt.logMonoTime
@@ -418,15 +466,122 @@ class Replay:
       return
 
     # Get frame reader for this segment
+    # Note: eidx.segmentId is the local frame index, not the segment number
+    # The segment number comes from the current playback position
     event_data = self._seg_mgr.get_event_data()
-    eidx = getattr(evt, which)
-    seg_num = eidx.segmentId
 
-    if seg_num in event_data.segments:
-      seg_data = event_data.segments[seg_num]
-      cam_name = {CameraType.ROAD: 'road', CameraType.DRIVER: 'driver', CameraType.WIDE_ROAD: 'wide'}[cam_type]
-      if cam_name in seg_data.frame_readers:
-        fr = seg_data.frame_readers[cam_name]
-        if self._speed > 1.0:
-          self._camera_server.wait_for_sent()
-        self._camera_server.push_frame(cam_type, fr, evt)
+    if self._current_segment not in event_data.segments:
+      return
+
+    seg_data = event_data.segments[self._current_segment]
+    cam_name = {CameraType.ROAD: 'road', CameraType.DRIVER: 'driver', CameraType.WIDE_ROAD: 'wide'}[cam_type]
+    if cam_name not in seg_data.frame_readers:
+      return
+
+    fr = seg_data.frame_readers[cam_name]
+    if self._speed > 1.0:
+      self._camera_server.wait_for_sent()
+    self._camera_server.push_frame(cam_type, fr, evt)
+
+
+def main():
+  # Increase file descriptor limit on macOS
+  if sys.platform == 'darwin':
+    try:
+      resource.setrlimit(resource.RLIMIT_NOFILE, (1024, 1024))
+    except Exception:
+      pass
+
+  parser = argparse.ArgumentParser(description='openpilot replay tool')
+  parser.add_argument('route', nargs='?', default='', help='Route to replay')
+  parser.add_argument('-a', '--allow', type=str, default='', help='Whitelist of services (comma-separated)')
+  parser.add_argument('-b', '--block', type=str, default='', help='Blacklist of services (comma-separated)')
+  parser.add_argument('-c', '--cache', type=int, default=-1, help='Number of segments to cache')
+  parser.add_argument('-s', '--start', type=int, default=0, help='Start from <seconds>')
+  parser.add_argument('-x', '--playback', type=float, default=-1, help='Playback speed')
+  parser.add_argument('-d', '--data_dir', type=str, default='', help='Local directory with routes')
+  parser.add_argument('-p', '--prefix', type=str, default='', help='OPENPILOT_PREFIX')
+  parser.add_argument('--demo', action='store_true', help='Use demo route')
+  parser.add_argument('--auto', action='store_true', help='Auto load from best source')
+  parser.add_argument('--dcam', action='store_true', help='Load driver camera')
+  parser.add_argument('--ecam', action='store_true', help='Load wide road camera')
+  parser.add_argument('--no-loop', action='store_true', help='Stop at end of route')
+  parser.add_argument('--no-cache', action='store_true', help='Disable local cache')
+  parser.add_argument('--qcam', action='store_true', help='Load qcamera')
+  parser.add_argument('--no-vipc', action='store_true', help='Do not output video')
+  parser.add_argument('--all', action='store_true', help='Output all messages')
+  parser.add_argument('--headless', action='store_true', help='Run without UI')
+
+  args = parser.parse_args()
+
+  # Determine route
+  route = args.route
+  if args.demo:
+    route = DEMO_ROUTE
+  if not route:
+    print("No route provided. Use --help for usage information.")
+    return 1
+
+  # Parse flags
+  flags = ReplayFlags.NONE
+  if args.dcam:
+    flags |= ReplayFlags.DCAM
+  if args.ecam:
+    flags |= ReplayFlags.ECAM
+  if args.no_loop:
+    flags |= ReplayFlags.NO_LOOP
+  if args.no_cache:
+    flags |= ReplayFlags.NO_FILE_CACHE
+  if args.qcam:
+    flags |= ReplayFlags.QCAMERA
+  if args.no_vipc:
+    flags |= ReplayFlags.NO_VIPC
+  if args.all:
+    flags |= ReplayFlags.ALL_SERVICES
+
+  # Parse allow/block lists
+  allow = [s.strip() for s in args.allow.split(',') if s.strip()]
+  block = [s.strip() for s in args.block.split(',') if s.strip()]
+
+  # Set prefix if provided
+  if args.prefix:
+    import os
+    os.environ['OPENPILOT_PREFIX'] = args.prefix
+
+  # Create replay instance
+  replay = Replay(
+    route=route,
+    allow=allow,
+    block=block,
+    flags=flags,
+    data_dir=args.data_dir,
+    auto_source=args.auto
+  )
+
+  if args.cache > 0:
+    replay.segment_cache_limit = args.cache
+
+  if args.playback > 0:
+    replay.speed = max(0.2, min(8.0, args.playback))
+
+  if not replay.load():
+    return 1
+
+  replay.start(args.start)
+
+  if args.headless:
+    try:
+      while True:
+        time.sleep(5)
+        print(f"replay: {replay.current_seconds:.1f}s / {replay.max_seconds:.1f}s")
+    except KeyboardInterrupt:
+      pass
+    return 0
+
+  from openpilot.tools.replay.consoleui import ConsoleUI
+  console_ui = ConsoleUI(replay)
+  return console_ui.exec()
+
+
+if __name__ == '__main__':
+  sys.exit(main())
