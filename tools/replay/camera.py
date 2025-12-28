@@ -28,6 +28,37 @@ def get_nv12_info(width: int, height: int) -> tuple[int, int, int]:
   return nv12_width, nv12_height, nv12_buffer_size
 
 
+def repack_nv12_to_venus(yuv: np.ndarray, width: int, height: int, stride: int) -> np.ndarray:
+  """Repack NV12 data from unpadded to VENUS-aligned stride.
+
+  FrameReader returns NV12 with original width as stride.
+  VisionIPC expects VENUS-aligned stride (128-byte aligned).
+  """
+  y_plane_size = width * height
+  uv_plane_size = width * height // 2
+
+  # Split into Y and UV planes
+  y_plane = yuv[:y_plane_size].reshape(height, width)
+  uv_plane = yuv[y_plane_size:y_plane_size + uv_plane_size].reshape(height // 2, width)
+
+  # Create output buffer with VENUS stride
+  y_scanlines = (height + 31) & ~31
+  uv_scanlines = (height // 2 + 31) & ~31
+
+  out = np.zeros(stride * y_scanlines + stride * uv_scanlines, dtype=np.uint8)
+
+  # Copy Y plane line by line with new stride
+  for i in range(height):
+    out[i * stride:i * stride + width] = y_plane[i]
+
+  # Copy UV plane line by line with new stride
+  uv_offset = stride * y_scanlines
+  for i in range(height // 2):
+    out[uv_offset + i * stride:uv_offset + i * stride + width] = uv_plane[i]
+
+  return out
+
+
 class CameraType(Enum):
   ROAD = 0
   DRIVER = 1
@@ -47,6 +78,7 @@ class Camera:
     self.stream_type = CAMERA_STREAM_TYPES[cam_type]
     self.width = 0
     self.height = 0
+    self.nv12_stride = 0  # VENUS-aligned stride
     self.nv12_buffer_size = 0  # Padded buffer size for VisionIPC
     self.thread: Optional[threading.Thread] = None
     self.queue: queue.Queue = queue.Queue()
@@ -89,8 +121,9 @@ class CameraServer:
 
       if cam.width > 0 and cam.height > 0:
         nv12_width, nv12_height, nv12_buffer_size = get_nv12_info(cam.width, cam.height)
+        cam.nv12_stride = nv12_width
         cam.nv12_buffer_size = nv12_buffer_size
-        log.info(f"camera[{cam.type.name}] frame size {cam.width}x{cam.height}, nv12 buffer size {nv12_buffer_size}")
+        log.info(f"camera[{cam.type.name}] frame size {cam.width}x{cam.height}, stride {nv12_width}, buffer {nv12_buffer_size}")
         self._vipc_server.create_buffers_with_sizes(
           cam.stream_type, BUFFER_COUNT, cam.width, cam.height,
           nv12_buffer_size, nv12_width, nv12_width * nv12_height
@@ -124,23 +157,25 @@ class CameraServer:
                event.driverEncodeIdx if cam.type == CameraType.DRIVER else \
                event.wideRoadEncodeIdx
 
-        segment_id = eidx.segmentId
+        local_frame_idx = eidx.segmentId  # segmentId is actually the local frame index within segment
         frame_id = eidx.frameId
 
         # Get the frame
-        yuv = self._get_frame(cam, fr, segment_id, frame_id)
+        yuv = self._get_frame(cam, fr, local_frame_idx, frame_id)
         if yuv is not None:
-          # Send via VisionIPC - flatten to 1D and pad to match buffer size
-          timestamp_sof = eidx.timestampSof
-          timestamp_eof = eidx.timestampEof
-          yuv_bytes = yuv.flatten().tobytes()
-          # Pad to match the NV12 buffer size expected by VisionIPC
+          # Repack from unpadded NV12 to VENUS-aligned stride
+          yuv_venus = repack_nv12_to_venus(yuv, cam.width, cam.height, cam.nv12_stride)
+          yuv_bytes = yuv_venus.tobytes()
+          # Pad to match the full buffer size expected by VisionIPC
           if len(yuv_bytes) < cam.nv12_buffer_size:
             yuv_bytes = yuv_bytes + bytes(cam.nv12_buffer_size - len(yuv_bytes))
+
+          timestamp_sof = eidx.timestampSof
+          timestamp_eof = eidx.timestampEof
           self._vipc_server.send(cam.stream_type, yuv_bytes, frame_id, timestamp_sof, timestamp_eof)
 
         # Prefetch next frame
-        self._get_frame(cam, fr, segment_id + 1, frame_id + 1)
+        self._get_frame(cam, fr, local_frame_idx + 1, frame_id + 1)
 
       except Exception as e:
         log.error(f"camera[{cam.type.name}] error: {e}\n{traceback.format_exc()}")
@@ -148,15 +183,13 @@ class CameraServer:
       with self._publishing_lock:
         self._publishing -= 1
 
-  def _get_frame(self, cam: Camera, fr: FrameReader, segment_id: int, frame_id: int) -> Optional[np.ndarray]:
+  def _get_frame(self, cam: Camera, fr: FrameReader, local_idx: int, frame_id: int) -> Optional[np.ndarray]:
     # Check cache
     if frame_id in cam.cached_frames:
       return cam.cached_frames[frame_id]
 
-    # Get frame from reader
+    # Get frame from reader using local index
     try:
-      # FrameReader uses local frame index (0-based within segment)
-      local_idx = frame_id % 1200  # ~60s at 20fps
       if local_idx < fr.frame_count:
         yuv = fr.get(local_idx)
         cam.cached_frames[frame_id] = yuv
