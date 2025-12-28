@@ -59,10 +59,10 @@ DEMO_ROUTE = "a2a0ccea32023010|2023-07-27--13-01-19"
 
 class Replay:
   def __init__(self, route: str, allow: list[str] = None, block: list[str] = None,
-               sm=None, flags: int = 0, data_dir: str = "", auto_source: bool = False):
+               sm=None, flags: int = 0, data_dir: str = ""):
     self._sm = sm
     self._flags = flags
-    self._seg_mgr = SegmentManager(route, flags, data_dir, auto_source)
+    self._seg_mgr = SegmentManager(route, flags, data_dir)
 
     allow = allow or []
     block = block or []
@@ -345,9 +345,9 @@ class Replay:
     self._stream_thread.start()
 
   def _stream_thread_fn(self) -> None:
-    with self._stream_lock:
-      while True:
-        # Wait for events to be ready
+    while True:
+      # Hold lock only while checking/updating shared state
+      with self._stream_lock:
         self._stream_cv.wait_for(lambda: self._exit or (self._events_ready and not self._interrupt.is_set()))
         if self._exit:
           break
@@ -366,20 +366,19 @@ class Replay:
           self._events_ready = False
           continue
 
-        last_idx = self._publish_events(events, first_idx)
+      # Publish WITHOUT holding lock - allows UI to interrupt quickly
+      last_idx = self._publish_events(events, first_idx)
 
-        # Wait for camera frames to be sent
-        if self._camera_server:
-          self._camera_server.wait_for_sent()
+      # Wait for camera frames to be sent
+      if self._camera_server:
+        self._camera_server.wait_for_sent()
 
-        # Handle loop
-        if last_idx >= len(events) and not self.has_flag(ReplayFlags.NO_LOOP):
-          segments = list(self._seg_mgr._segments.keys())
-          if segments and event_data.is_segment_loaded(max(segments)):
-            log.info("reaches the end of route, restart from beginning")
-            self._stream_lock.release()
-            self.seek_to(self._min_seconds, relative=False)
-            self._stream_lock.acquire()
+      # Handle loop
+      if last_idx >= len(events) and not self.has_flag(ReplayFlags.NO_LOOP):
+        segments = list(self._seg_mgr._segments.keys())
+        if segments and event_data.is_segment_loaded(max(segments)):
+          log.info("reaches the end of route, restart from beginning")
+          self.seek_to(self._min_seconds, relative=False)
 
   def _publish_events(self, events: list, first_idx: int) -> int:
     evt_start_ts = self._cur_mono_time
@@ -502,7 +501,6 @@ def main():
   parser.add_argument('-d', '--data_dir', type=str, default='', help='Local directory with routes')
   parser.add_argument('-p', '--prefix', type=str, default='', help='OPENPILOT_PREFIX')
   parser.add_argument('--demo', action='store_true', help='Use demo route')
-  parser.add_argument('--auto', action='store_true', help='Auto load from best source')
   parser.add_argument('--dcam', action='store_true', help='Load driver camera')
   parser.add_argument('--ecam', action='store_true', help='Load wide road camera')
   parser.add_argument('--no-loop', action='store_true', help='Stop at end of route')
@@ -554,8 +552,7 @@ def main():
     allow=allow,
     block=block,
     flags=flags,
-    data_dir=args.data_dir,
-    auto_source=args.auto
+    data_dir=args.data_dir
   )
 
   if args.cache > 0:

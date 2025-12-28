@@ -51,10 +51,9 @@ class EventData:
 
 
 class SegmentManager:
-  def __init__(self, route_name: str, flags: int = 0, data_dir: str = "", auto_source: bool = False):
+  def __init__(self, route_name: str, flags: int = 0, data_dir: str = ""):
     self._flags = flags
     self._data_dir = data_dir if data_dir else None
-    self._auto_source = auto_source
     self._route_name = route_name
     self._route: Optional[Route] = None
 
