@@ -54,8 +54,8 @@ class SettingsLayout(NavWidget):
     manual_stats_btn.set_click_callback(lambda: self._set_current_panel(PanelType.MANUAL_STATS))
 
     self._scroller = Scroller([
+      manual_stats_btn,  # MT Stats first!
       toggles_btn,
-      manual_stats_btn,  # MT Stats right after Toggles
       network_btn,
       device_btn,
       PairBigButton(),

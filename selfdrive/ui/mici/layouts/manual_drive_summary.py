@@ -3,6 +3,7 @@ Manual Drive Summary Dialog
 
 Shows end-of-drive statistics for manual transmission driving with
 encouraging or critical feedback based on performance.
+Poker hand themed with waddle/jacket references.
 """
 
 import json
@@ -20,9 +21,29 @@ from openpilot.system.ui.widgets import Widget
 GREEN = rl.Color(46, 204, 113, 255)
 YELLOW = rl.Color(241, 196, 15, 255)
 RED = rl.Color(231, 76, 60, 255)
+ORANGE = rl.Color(230, 126, 34, 255)
 GRAY = rl.Color(150, 150, 150, 255)
 LIGHT_GRAY = rl.Color(200, 200, 200, 255)
-BG_COLOR = rl.Color(30, 30, 30, 240)
+WHITE = rl.Color(255, 255, 255, 255)
+BG_COLOR = rl.Color(30, 30, 30, 245)
+BG_CARD = rl.Color(45, 45, 45, 255)
+
+# Poker hand names
+HAND_NAMES = {
+  "A": "Aces",
+  "K": "Kings", 
+  "Q": "Queens",
+  "J": "Jacks",
+  "10": "10s"
+}
+
+HAND_SUBTITLES = {
+  "A": "Porch-worthy! KP!",
+  "K": "CCM vibes! QG!",
+  "Q": "Priest-approved",
+  "J": "Not SS... yet",
+  "10": "Jacketed! Huge oof"
+}
 
 
 class ManualDriveSummaryDialog(Widget):
@@ -33,8 +54,11 @@ class ManualDriveSummaryDialog(Widget):
     self._params = Params()
     self._dismiss_callback = dismiss_callback
     self._session_data: Optional[dict] = None
+    self._historical_data: Optional[dict] = None
     self._overall_grade: str = "good"  # good, ok, poor
     self._card_rank: str = "10"  # Poker card rank: 10, J, Q, K, A
+    self._shift_score: float = 0.0
+    self._avg_shift_score: float = 0.0
     self._show_time: float = 0.0
     self._auto_dismiss_after: float = 30.0  # Auto dismiss after 30 seconds
 
@@ -42,22 +66,47 @@ class ManualDriveSummaryDialog(Widget):
     super().show_event()
     self._show_time = time.monotonic()
     self._load_session()
+    self._load_historical()
 
   def _load_session(self):
     """Load the last session data from Params"""
     try:
       data = self._params.get("ManualDriveLastSession")
       if data:
-        self._session_data = json.loads(data)
+        self._session_data = data if isinstance(data, dict) else json.loads(data)
         self._calculate_grade()
     except Exception:
       self._session_data = None
+
+  def _load_historical(self):
+    """Load historical stats for comparison"""
+    try:
+      data = self._params.get("ManualDriveStats")
+      if data:
+        self._historical_data = data if isinstance(data, dict) else json.loads(data)
+        # Calculate average shift score from history
+        history = self._historical_data.get('session_history', [])
+        if history:
+          scores = []
+          for s in history[-10:]:  # Last 10 sessions
+            ups = s.get('upshifts', 0)
+            ups_good = s.get('upshifts_good', 0)
+            downs = s.get('downshifts', 0)
+            downs_good = s.get('downshifts_good', 0)
+            total = ups + downs
+            if total > 0:
+              scores.append((ups_good + downs_good) / total * 100)
+          if scores:
+            self._avg_shift_score = sum(scores) / len(scores)
+    except Exception:
+      self._historical_data = None
 
   def _calculate_grade(self):
     """Calculate overall grade based on session performance"""
     if not self._session_data:
       self._overall_grade = "ok"
       self._card_rank = "10"
+      self._shift_score = 0
       return
 
     # Calculate grade based on stalls, shifts, and launches
@@ -77,7 +126,7 @@ class ManualDriveSummaryDialog(Widget):
 
     # Calculate scores
     total_shifts = upshift_total + downshift_total
-    shift_score = ((upshift_good + downshift_good) / total_shifts * 100) if total_shifts > 0 else 100
+    self._shift_score = ((upshift_good + downshift_good) / total_shifts * 100) if total_shifts > 0 else 100
     launch_score = (launch_good / launch_total * 100) if launch_total > 0 else 100
 
     # Penalties
@@ -85,7 +134,7 @@ class ManualDriveSummaryDialog(Widget):
     lug_penalty = lugs * 5
     launch_stall_penalty = launch_stalled * 15
 
-    overall_score = max(0, min(100, (shift_score + launch_score) / 2 - stall_penalty - lug_penalty - launch_stall_penalty))
+    overall_score = max(0, min(100, (self._shift_score + launch_score) / 2 - stall_penalty - lug_penalty - launch_stall_penalty))
 
     # Poker card ranking: 10, J, Q, K, A
     if overall_score >= 90 and stalls == 0:
@@ -132,43 +181,55 @@ class ManualDriveSummaryDialog(Widget):
     messages = []
 
     if self._overall_grade == "good":
-      if self._card_rank == "A":
-        messages.append("Ace drive! You're a true waddle master!")
+      # Check for perfect drive - Kacper glasses moment
+      total_shifts = upshift_total + downshift_total
+      total_good = upshift_good + downshift_good
+      perfect_shifts = total_shifts > 0 and total_good == total_shifts
+      perfect_launches = launch_total > 0 and launch_good == launch_total
+
+      if self._card_rank == "A" and stalls == 0 and lugs == 0 and perfect_shifts and perfect_launches:
+        messages.append("PERFECT! Waddle is driving! Kacper threw his glasses!")
+      elif self._card_rank == "A":
+        messages.append("Aces! Porch-worthy waddle, KP earned!")
       elif self._card_rank == "K":
-        messages.append("King of the road! Waddling like a pro!")
+        messages.append("Kings! Waddle energy, CCM vibes!")
       if stalls == 0 and launch_stalled == 0:
         messages.append("No stalls!")
-      if upshift_total > 0 and upshift_good == upshift_total:
+      if perfect_shifts:
+        messages.append("Perfect shifts - priest-approved!")
+      elif upshift_total > 0 and upshift_good == upshift_total:
         messages.append("Perfect upshifts!")
       if downshift_total > 0 and downshift_good >= downshift_total * 0.8:
         messages.append("Great rev matching!")
-      if launch_total > 0 and launch_good >= launch_total * 0.8:
+      if perfect_launches:
+        messages.append("Flawless launches!")
+      elif launch_total > 0 and launch_good >= launch_total * 0.8:
         messages.append("Smooth launches!")
       if not messages:
-        messages.append("Keep waddling!")
+        messages.append("Keep channeling waddle!")
 
     elif self._overall_grade == "ok":
       if self._card_rank == "Q":
-        messages.append("Queen-level driving - almost there!")
+        messages.append("Queens - almost there!")
       else:
-        messages.append("Jack of all gears - room to improve!")
+        messages.append("Jacks - improving, not SS!")
       if stalls > 0:
-        messages.append(f"Only {stalls} stall{'s' if stalls > 1 else ''} - improving!")
+        messages.append(f"Only {stalls} stall{'s' if stalls > 1 else ''} - shedding jackets!")
       if lugs > 0:
         messages.append(f"Watch RPMs - {lugs} lug{'s' if lugs > 1 else ''}.")
       if upshift_total > 0 and upshift_good < upshift_total:
         messages.append("Smoother upshifts needed.")
 
     else:  # poor - jackets
-      messages.append("Time to hang up those jackets and try again!")
+      messages.append("Jacketed! Huge oof. SS vibes!")
       if stalls > 2:
         messages.append(f"{stalls} stalls - more gas, slower clutch!")
       if launch_stalled > 0:
-        messages.append(f"{launch_stalled} stalled launch{'es' if launch_stalled > 1 else ''} - find that bite point!")
+        messages.append(f"{launch_stalled} stalled launch{'es' if launch_stalled > 1 else ''} - find bite point!")
       if lugs > 3:
-        messages.append(f"Lugging {lugs} times - downshift sooner!")
+        messages.append(f"Lugging {lugs}x - downshift sooner!")
       if not messages[1:]:
-        messages.append("Every pro stalled at first. Keep at it!")
+        messages.append("Even the best got jacketed at first. QG!")
 
     return " ".join(messages)
 
@@ -197,8 +258,8 @@ class ManualDriveSummaryDialog(Widget):
     rl.draw_rectangle(0, 0, gui_app.width, gui_app.height, rl.Color(0, 0, 0, 180))
 
     # Dialog dimensions
-    dialog_w = min(500, gui_app.width - 40)
-    dialog_h = min(600, gui_app.height - 40)
+    dialog_w = min(520, gui_app.width - 40)
+    dialog_h = min(680, gui_app.height - 40)
     dialog_x = (gui_app.width - dialog_w) // 2
     dialog_y = (gui_app.height - dialog_h) // 2
 
@@ -209,78 +270,162 @@ class ManualDriveSummaryDialog(Widget):
     )
 
     # Content area
-    x = dialog_x + 30
-    y = dialog_y + 25
-    w = dialog_w - 60
+    x = dialog_x + 25
+    y = dialog_y + 20
+    w = dialog_w - 50
+
+    font_bold = gui_app.font(FontWeight.BOLD)
+    font_medium = gui_app.font(FontWeight.MEDIUM)
+    font_roman = gui_app.font(FontWeight.ROMAN)
 
     # Header
     header_text, header_color = self._get_header_text()
-    font = gui_app.font(FontWeight.BOLD)
-    rl.draw_text_ex(font, header_text, rl.Vector2(x, y), 48, 0, header_color)
-    y += 55
+    rl.draw_text_ex(font_bold, header_text, rl.Vector2(x, y), 44, 0, header_color)
+    y += 50
 
-    # Card rank display - poker hand style
-    card_names = {"A": "Aces", "K": "Kings", "Q": "Queens", "J": "Jacks", "10": "10s"}
+    # Card rank display - poker hand style with subtitle
     card_color = GREEN if self._card_rank in ("A", "K") else (YELLOW if self._card_rank in ("Q", "J") else RED)
-    card_text = f"Your hand: {card_names[self._card_rank]}"
-    rl.draw_text_ex(gui_app.font(FontWeight.MEDIUM), card_text, rl.Vector2(x, y), 32, 0, card_color)
-    y += 45
+    card_text = f"Your hand: {HAND_NAMES[self._card_rank]}"
+    rl.draw_text_ex(font_medium, card_text, rl.Vector2(x, y), 28, 0, card_color)
+    # Subtitle
+    subtitle = HAND_SUBTITLES[self._card_rank]
+    subtitle_width = rl.measure_text_ex(font_roman, subtitle, 20, 0).x
+    rl.draw_text_ex(font_roman, subtitle, rl.Vector2(x + w - subtitle_width, y + 4), 20, 0, card_color)
+    y += 38
 
     # Duration
     duration = self._session_data.get('duration', 0)
     duration_min = int(duration // 60)
     duration_sec = int(duration % 60)
-    rl.draw_text_ex(gui_app.font(FontWeight.ROMAN), f"Drive Duration: {duration_min}:{duration_sec:02d}",
-                    rl.Vector2(x, y), 28, 0, GRAY)
-    y += 45
+    rl.draw_text_ex(font_roman, f"Drive: {duration_min}:{duration_sec:02d}",
+                    rl.Vector2(x, y), 22, 0, GRAY)
+    y += 35
 
-    # Separator
-    rl.draw_rectangle(x, y, w, 2, rl.Color(60, 60, 60, 255))
+    # Shift Score Progress Bar with comparison
+    y = self._draw_score_bar(x, y, w, "Shift Score", self._shift_score, self._avg_shift_score)
     y += 15
 
-    # Stats sections
-    y = self._draw_stat_section(x, y, w, "Stalls", self._session_data.get('stall_count', 0), target=0, lower_better=True)
-    y = self._draw_stat_section(x, y, w, "Engine Lugs", self._session_data.get('lug_count', 0), target=0, lower_better=True)
+    # Stats in a card
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, w, 180), 0.02, 10, BG_CARD)
+    card_x = x + 15
+    card_y = y + 12
 
-    # Launches
+    # Jackets section (stalls + lugs)
+    stalls = self._session_data.get('stall_count', 0)
+    lugs = self._session_data.get('lug_count', 0)
+    jackets_text = "Jackets:" if (stalls > 0 or lugs > 0) else "No Jackets!"
+    jackets_color = RED if stalls > 0 else (YELLOW if lugs > 0 else GREEN)
+    rl.draw_text_ex(font_medium, jackets_text, rl.Vector2(card_x, card_y), 24, 0, jackets_color)
+    card_y += 30
+
+    card_y = self._draw_mini_stat(card_x, card_y, w - 30, "Stalls", stalls, 0, True)
+    card_y = self._draw_mini_stat(card_x, card_y, w - 30, "Lugs", lugs, 0, True)
+
+    # Waddle section (launches + shifts)
+    card_y += 8
+    rl.draw_text_ex(font_medium, "Waddle Stats:", rl.Vector2(card_x, card_y), 24, 0, WHITE)
+    card_y += 30
+
     launch_total = self._session_data.get('launch_count', 0)
     launch_good = self._session_data.get('launch_good', 0)
-    launch_stalled = self._session_data.get('launch_stalled', 0)
-    if launch_total > 0:
-      y = self._draw_stat_section(x, y, w, "Good Launches", f"{launch_good}/{launch_total}",
-                                   target=launch_total, current=launch_good)
-      if launch_stalled > 0:
-        y = self._draw_stat_section(x, y, w, "Stalled Launches", launch_stalled, target=0, lower_better=True)
-
-    # Upshifts
     upshift_total = self._session_data.get('upshift_count', 0)
     upshift_good = self._session_data.get('upshift_good', 0)
-    if upshift_total > 0:
-      y = self._draw_stat_section(x, y, w, "Good Upshifts", f"{upshift_good}/{upshift_total}",
-                                   target=upshift_total, current=upshift_good)
-
-    # Downshifts
     downshift_total = self._session_data.get('downshift_count', 0)
     downshift_good = self._session_data.get('downshift_good', 0)
-    if downshift_total > 0:
-      y = self._draw_stat_section(x, y, w, "Good Downshifts", f"{downshift_good}/{downshift_total}",
-                                   target=downshift_total, current=downshift_good)
 
-    y += 10
+    if launch_total > 0:
+      card_y = self._draw_mini_stat(card_x, card_y, w - 30, "Launches", f"{launch_good}/{launch_total}", launch_total, False, launch_good)
+    total_shifts = upshift_total + downshift_total
+    total_good = upshift_good + downshift_good
+    if total_shifts > 0:
+      card_y = self._draw_mini_stat(card_x, card_y, w - 30, "Shifts", f"{total_good}/{total_shifts}", total_shifts, False, total_good)
+
+    y += 190
 
     # Encouragement/criticism text
     encouragement = self._get_encouragement_text()
-    wrapped = wrap_text(gui_app.font(FontWeight.ROMAN), encouragement, 24, w)
+    wrapped = wrap_text(font_roman, encouragement, 22, w)
     for line in wrapped:
-      rl.draw_text_ex(gui_app.font(FontWeight.ROMAN), line, rl.Vector2(x, y), 24, 0, LIGHT_GRAY)
-      y += int(24 * FONT_SCALE)
+      rl.draw_text_ex(font_roman, line, rl.Vector2(x, y), 22, 0, LIGHT_GRAY)
+      y += 28
 
     # Tap to dismiss hint
-    hint_text = "Tap to dismiss"
-    hint_font = gui_app.font(FontWeight.ROMAN)
-    hint_size = 20
-    rl.draw_text_ex(hint_font, hint_text, rl.Vector2(dialog_x + dialog_w // 2 - 50, dialog_y + dialog_h - 35),
-                    hint_size, 0, GRAY)
+    hint_text = "Tap anywhere to dismiss"
+    hint_width = rl.measure_text_ex(font_roman, hint_text, 18, 0).x
+    rl.draw_text_ex(font_roman, hint_text, rl.Vector2(dialog_x + (dialog_w - hint_width) // 2, dialog_y + dialog_h - 30),
+                    18, 0, GRAY)
+
+  def _draw_score_bar(self, x: int, y: int, w: int, label: str, score: float, avg_score: float) -> int:
+    """Draw a progress bar showing score vs average"""
+    font_medium = gui_app.font(FontWeight.MEDIUM)
+    font_roman = gui_app.font(FontWeight.ROMAN)
+
+    # Label and score
+    rl.draw_text_ex(font_medium, label, rl.Vector2(x, y), 22, 0, WHITE)
+    score_text = f"{int(score)}%"
+    score_color = GREEN if score >= 80 else (YELLOW if score >= 50 else RED)
+    score_width = rl.measure_text_ex(font_medium, score_text, 22, 0).x
+    rl.draw_text_ex(font_medium, score_text, rl.Vector2(x + w - score_width, y), 22, 0, score_color)
+    y += 28
+
+    # Progress bar background
+    bar_h = 16
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, w, bar_h), 0.3, 10, rl.Color(60, 60, 60, 255))
+
+    # Progress bar fill
+    fill_w = int((score / 100) * w)
+    if fill_w > 0:
+      rl.draw_rectangle_rounded(rl.Rectangle(x, y, fill_w, bar_h), 0.3, 10, score_color)
+
+    # Average marker line
+    if avg_score > 0:
+      avg_x = x + int((avg_score / 100) * w)
+      rl.draw_rectangle(avg_x - 1, y - 2, 3, bar_h + 4, WHITE)
+
+    y += bar_h + 6
+
+    # Comparison text
+    if avg_score > 0:
+      diff = score - avg_score
+      if diff > 5:
+        comp_text = f"Above avg (+{int(diff)})"
+        comp_color = GREEN
+      elif diff < -5:
+        comp_text = f"Below avg ({int(diff)})"
+        comp_color = RED
+      else:
+        comp_text = "Near average"
+        comp_color = GRAY
+      rl.draw_text_ex(font_roman, comp_text, rl.Vector2(x, y), 16, 0, comp_color)
+      rl.draw_text_ex(font_roman, "| = your avg", rl.Vector2(x + w - 80, y), 16, 0, GRAY)
+    y += 22
+
+    return y
+
+  def _draw_mini_stat(self, x: int, y: int, w: int, label: str, value, target, lower_better: bool, current=None) -> int:
+    """Draw a compact stat row"""
+    font_roman = gui_app.font(FontWeight.ROMAN)
+    font_size = 20
+
+    # Determine color
+    if lower_better:
+      if isinstance(value, int):
+        color = GREEN if value == 0 else (YELLOW if value <= 2 else RED)
+      else:
+        color = LIGHT_GRAY
+    else:
+      if current is not None and target > 0:
+        ratio = current / target
+        color = GREEN if ratio >= 0.8 else (YELLOW if ratio >= 0.5 else RED)
+      else:
+        color = LIGHT_GRAY
+
+    rl.draw_text_ex(font_roman, label, rl.Vector2(x, y), font_size, 0, LIGHT_GRAY)
+    value_str = str(value)
+    value_width = rl.measure_text_ex(font_roman, value_str, font_size, 0).x
+    rl.draw_text_ex(font_roman, value_str, rl.Vector2(x + w - value_width, y), font_size, 0, color)
+
+    return y + 26
 
   def _draw_stat_section(self, x: int, y: int, w: int, label: str, value, target=None,
                           current=None, lower_better=False) -> int:

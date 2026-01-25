@@ -72,8 +72,10 @@ class ManualStatsLayout(NavWidget):
                       rl.Vector2(x, y), 28, 0, GRAY)
       return
 
-    # Overview card
-    y = self._draw_card(x, y, w, "Overview", [
+    # Overall hand rating
+    hand_rating, hand_color = self._get_overall_hand()
+    y = self._draw_card(x, y, w, "Your Hand", [
+      ("Overall Rating", hand_rating, hand_color),
       ("Total Drives", str(self._stats.get('total_drives', 0)), WHITE),
       ("Total Drive Time", self._format_time(self._stats.get('total_drive_time', 0)), WHITE),
       ("Total Stalls", str(self._stats.get('total_stalls', 0)), self._stall_color(self._stats.get('total_stalls', 0))),
@@ -135,6 +137,23 @@ class ManualStatsLayout(NavWidget):
       y = self._draw_card(x, y, w, "Recent Trends", trend_items)
       y += 15
 
+    # Per-gear smoothness chart
+    gear_counts = self._stats.get('gear_shift_counts', {})
+    gear_jerks = self._stats.get('gear_shift_jerk_totals', {})
+    if gear_counts and any(gear_counts.values()):
+      y = self._draw_gear_chart(x, y, w, gear_counts, gear_jerks)
+      y += 15
+
+    # Session history charts
+    session_history = self._stats.get('session_history', [])
+    if session_history:
+      y = self._draw_shift_chart(x, y, w, session_history)
+      y += 15
+      y = self._draw_stalls_chart(x, y, w, session_history)
+      y += 15
+      y = self._draw_launch_chart(x, y, w, session_history)
+      y += 15
+
     # Encouragement based on progress (with text wrapping)
     y += 10
     encouragement = self._get_encouragement()
@@ -144,11 +163,19 @@ class ManualStatsLayout(NavWidget):
       y += 30
 
   def _draw_card(self, x: int, y: int, w: int, title: str, items: list) -> int:
-    """Draw a card with title and stat items"""
+    """Draw a card with title and stat items, with wrapping for long values"""
     font_bold = gui_app.font(FontWeight.BOLD)
     font_medium = gui_app.font(FontWeight.MEDIUM)
 
-    card_h = 50 + len(items) * 38
+    # Calculate height - check for items that need wrapping
+    extra_lines = 0
+    max_value_width = w - 140  # Leave space for label
+    for _, value, _ in items:
+      value_width = rl.measure_text_ex(font_medium, value, 26, 0).x
+      if value_width > max_value_width:
+        extra_lines += 1
+
+    card_h = 50 + len(items) * 38 + extra_lines * 30
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, w, card_h), 0.02, 10, BG_CARD)
 
     # Title
@@ -159,10 +186,281 @@ class ManualStatsLayout(NavWidget):
     for label, value, color in items:
       rl.draw_text_ex(font_medium, label, rl.Vector2(x + 15, y), 26, 0, LIGHT_GRAY)
       value_width = rl.measure_text_ex(font_medium, value, 26, 0).x
-      rl.draw_text_ex(font_medium, value, rl.Vector2(x + w - 15 - value_width, y), 26, 0, color)
-      y += 38
+
+      # Check if value needs to wrap to next line
+      if value_width > max_value_width:
+        # Draw value on next line, left-aligned with indent
+        y += 30
+        rl.draw_text_ex(font_medium, value, rl.Vector2(x + 25, y), 24, 0, color)
+        y += 38
+      else:
+        # Draw value right-aligned on same line
+        rl.draw_text_ex(font_medium, value, rl.Vector2(x + w - 15 - value_width, y), 26, 0, color)
+        y += 38
 
     return y
+
+  def _draw_shift_chart(self, x: int, y: int, w: int, sessions: list) -> int:
+    """Draw a bar chart showing shift score history"""
+    import datetime
+    font_bold = gui_app.font(FontWeight.BOLD)
+    font_small = gui_app.font(FontWeight.ROMAN)
+
+    chart_h = 200
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, w, chart_h), 0.02, 10, BG_CARD)
+
+    # Title
+    rl.draw_text_ex(font_bold, "Shift Score History", rl.Vector2(x + 15, y + 12), 28, 0, WHITE)
+
+    # Chart area
+    chart_x = x + 40
+    chart_y = y + 50
+    chart_w = w - 60
+    chart_inner_h = 90
+
+    # Draw axis
+    rl.draw_line(chart_x, chart_y + chart_inner_h, chart_x + chart_w, chart_y + chart_inner_h, GRAY)
+    rl.draw_line(chart_x, chart_y, chart_x, chart_y + chart_inner_h, GRAY)
+
+    # Y-axis labels
+    rl.draw_text_ex(font_small, "100", rl.Vector2(x + 10, chart_y - 5), 14, 0, GRAY)
+    rl.draw_text_ex(font_small, "50", rl.Vector2(x + 15, chart_y + chart_inner_h // 2 - 5), 14, 0, GRAY)
+    rl.draw_text_ex(font_small, "0", rl.Vector2(x + 22, chart_y + chart_inner_h - 5), 14, 0, GRAY)
+
+    display_sessions = sessions[-12:] if len(sessions) > 12 else sessions
+    if not display_sessions:
+      return y + chart_h
+
+    bar_spacing = 4
+    bar_w = max(8, (chart_w - bar_spacing * len(display_sessions)) // len(display_sessions))
+
+    for i, session in enumerate(display_sessions):
+      ups = session.get('upshifts', 0)
+      ups_good = session.get('upshifts_good', 0)
+      downs = session.get('downshifts', 0)
+      downs_good = session.get('downshifts_good', 0)
+      total = ups + downs
+      score = ((ups_good + downs_good) / total * 100) if total > 0 else 100
+
+      bar_h = int((score / 100) * chart_inner_h)
+      bar_x = chart_x + i * (bar_w + bar_spacing)
+      bar_y = chart_y + chart_inner_h - bar_h
+
+      color = GREEN if score >= 80 else (YELLOW if score >= 50 else RED)
+      rl.draw_rectangle(int(bar_x), int(bar_y), int(bar_w), int(bar_h), color)
+
+      # Day label
+      timestamp = session.get('timestamp', 0)
+      if timestamp > 0:
+        dt = datetime.datetime.fromtimestamp(timestamp)
+        day_x = bar_x + bar_w // 2 - 4
+        rl.draw_text_ex(font_small, str(dt.day), rl.Vector2(day_x, chart_y + chart_inner_h + 4), 13, 0, GRAY)
+
+    # Legend
+    legend_y = chart_y + chart_inner_h + 22
+    rl.draw_text_ex(font_small, "Higher = better shifts. Green 80%+, Yellow 50%+, Red <50%", rl.Vector2(chart_x, legend_y), 14, 0, GRAY)
+
+    return y + chart_h
+
+  def _draw_stalls_chart(self, x: int, y: int, w: int, sessions: list) -> int:
+    """Draw a bar chart showing stalls and lugs per session"""
+    import datetime
+    font_bold = gui_app.font(FontWeight.BOLD)
+    font_small = gui_app.font(FontWeight.ROMAN)
+
+    chart_h = 180
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, w, chart_h), 0.02, 10, BG_CARD)
+
+    # Title
+    rl.draw_text_ex(font_bold, "Stalls & Lugs (Jackets)", rl.Vector2(x + 15, y + 12), 28, 0, WHITE)
+
+    # Chart area
+    chart_x = x + 40
+    chart_y = y + 50
+    chart_w = w - 60
+    chart_inner_h = 70
+
+    # Find max for scaling
+    display_sessions = sessions[-12:] if len(sessions) > 12 else sessions
+    max_issues = max((s.get('stalls', 0) + s.get('lugs', 0) for s in display_sessions), default=1)
+    max_issues = max(max_issues, 5)  # Min scale of 5
+
+    # Draw axis
+    rl.draw_line(chart_x, chart_y + chart_inner_h, chart_x + chart_w, chart_y + chart_inner_h, GRAY)
+    rl.draw_line(chart_x, chart_y, chart_x, chart_y + chart_inner_h, GRAY)
+
+    # Y-axis labels
+    rl.draw_text_ex(font_small, str(max_issues), rl.Vector2(x + 15, chart_y - 5), 14, 0, GRAY)
+    rl.draw_text_ex(font_small, "0", rl.Vector2(x + 22, chart_y + chart_inner_h - 5), 14, 0, GRAY)
+
+    if not display_sessions:
+      return y + chart_h
+
+    bar_spacing = 4
+    bar_w = max(8, (chart_w - bar_spacing * len(display_sessions)) // len(display_sessions))
+
+    for i, session in enumerate(display_sessions):
+      stalls = session.get('stalls', 0)
+      lugs = session.get('lugs', 0)
+      bar_x = chart_x + i * (bar_w + bar_spacing)
+
+      # Stacked bar: stalls (red) on bottom, lugs (orange) on top
+      stall_h = int((stalls / max_issues) * chart_inner_h)
+      lug_h = int((lugs / max_issues) * chart_inner_h)
+
+      # Lugs (yellow/orange) - bottom
+      if lug_h > 0:
+        rl.draw_rectangle(int(bar_x), int(chart_y + chart_inner_h - lug_h), int(bar_w), int(lug_h), YELLOW)
+
+      # Stalls (red) - stacked on top of lugs
+      if stall_h > 0:
+        rl.draw_rectangle(int(bar_x), int(chart_y + chart_inner_h - lug_h - stall_h), int(bar_w), int(stall_h), RED)
+
+      # Day label
+      timestamp = session.get('timestamp', 0)
+      if timestamp > 0:
+        dt = datetime.datetime.fromtimestamp(timestamp)
+        day_x = bar_x + bar_w // 2 - 4
+        rl.draw_text_ex(font_small, str(dt.day), rl.Vector2(day_x, chart_y + chart_inner_h + 4), 13, 0, GRAY)
+
+    # Legend
+    legend_y = chart_y + chart_inner_h + 22
+    rl.draw_rectangle(int(chart_x), int(legend_y + 2), 12, 12, RED)
+    rl.draw_text_ex(font_small, "Stalls", rl.Vector2(chart_x + 16, legend_y), 14, 0, GRAY)
+    rl.draw_rectangle(int(chart_x + 70), int(legend_y + 2), 12, 12, YELLOW)
+    rl.draw_text_ex(font_small, "Lugs", rl.Vector2(chart_x + 86, legend_y), 14, 0, GRAY)
+    rl.draw_text_ex(font_small, "Lower = fewer jackets!", rl.Vector2(chart_x + 140, legend_y), 14, 0, GRAY)
+
+    return y + chart_h
+
+  def _draw_launch_chart(self, x: int, y: int, w: int, sessions: list) -> int:
+    """Draw a bar chart showing launch success rate"""
+    import datetime
+    font_bold = gui_app.font(FontWeight.BOLD)
+    font_small = gui_app.font(FontWeight.ROMAN)
+
+    chart_h = 180
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, w, chart_h), 0.02, 10, BG_CARD)
+
+    # Title
+    rl.draw_text_ex(font_bold, "Launch Success (Waddle Rate)", rl.Vector2(x + 15, y + 12), 28, 0, WHITE)
+
+    # Chart area
+    chart_x = x + 40
+    chart_y = y + 50
+    chart_w = w - 60
+    chart_inner_h = 70
+
+    # Draw axis
+    rl.draw_line(chart_x, chart_y + chart_inner_h, chart_x + chart_w, chart_y + chart_inner_h, GRAY)
+    rl.draw_line(chart_x, chart_y, chart_x, chart_y + chart_inner_h, GRAY)
+
+    # Y-axis labels
+    rl.draw_text_ex(font_small, "100%", rl.Vector2(x + 5, chart_y - 5), 14, 0, GRAY)
+    rl.draw_text_ex(font_small, "0%", rl.Vector2(x + 15, chart_y + chart_inner_h - 5), 14, 0, GRAY)
+
+    display_sessions = sessions[-12:] if len(sessions) > 12 else sessions
+    if not display_sessions:
+      return y + chart_h
+
+    bar_spacing = 4
+    bar_w = max(8, (chart_w - bar_spacing * len(display_sessions)) // len(display_sessions))
+
+    for i, session in enumerate(display_sessions):
+      launches = session.get('launches', 0)
+      launches_good = session.get('launches_good', 0)
+      bar_x = chart_x + i * (bar_w + bar_spacing)
+
+      if launches > 0:
+        pct = (launches_good / launches) * 100
+        bar_h = int((pct / 100) * chart_inner_h)
+        bar_y = chart_y + chart_inner_h - bar_h
+        color = GREEN if pct >= 80 else (YELLOW if pct >= 50 else RED)
+        rl.draw_rectangle(int(bar_x), int(bar_y), int(bar_w), int(bar_h), color)
+      else:
+        # No launches - draw thin gray bar
+        rl.draw_rectangle(int(bar_x), int(chart_y + chart_inner_h - 2), int(bar_w), 2, GRAY)
+
+      # Day label
+      timestamp = session.get('timestamp', 0)
+      if timestamp > 0:
+        dt = datetime.datetime.fromtimestamp(timestamp)
+        day_x = bar_x + bar_w // 2 - 4
+        rl.draw_text_ex(font_small, str(dt.day), rl.Vector2(day_x, chart_y + chart_inner_h + 4), 13, 0, GRAY)
+
+    # Legend
+    legend_y = chart_y + chart_inner_h + 22
+    rl.draw_text_ex(font_small, "Higher = smoother launches = more waddle, less jacket!", rl.Vector2(chart_x, legend_y), 14, 0, GRAY)
+
+    return y + chart_h
+
+  def _draw_gear_chart(self, x: int, y: int, w: int, gear_counts: dict, gear_jerks: dict) -> int:
+    """Draw a bar chart showing shift smoothness into each gear (1-6)"""
+    font_bold = gui_app.font(FontWeight.BOLD)
+    font_small = gui_app.font(FontWeight.ROMAN)
+
+    chart_h = 180
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, w, chart_h), 0.02, 10, BG_CARD)
+
+    # Title
+    rl.draw_text_ex(font_bold, "Waddle Smoothness by Gear", rl.Vector2(x + 15, y + 12), 28, 0, WHITE)
+
+    # Chart area
+    chart_x = x + 50
+    chart_y = y + 50
+    chart_w = w - 70
+    chart_inner_h = 70
+
+    # Draw axis
+    rl.draw_line(chart_x, chart_y + chart_inner_h, chart_x + chart_w, chart_y + chart_inner_h, GRAY)
+    rl.draw_line(chart_x, chart_y, chart_x, chart_y + chart_inner_h, GRAY)
+
+    # Y-axis labels (smoothness score, higher = better)
+    rl.draw_text_ex(font_small, "Smooth", rl.Vector2(x + 5, chart_y - 2), 12, 0, GREEN)
+    rl.draw_text_ex(font_small, "Jerky", rl.Vector2(x + 10, chart_y + chart_inner_h - 10), 12, 0, RED)
+
+    # Calculate smoothness scores for each gear (invert jerk - lower jerk = higher score)
+    bar_spacing = 12
+    bar_w = (chart_w - bar_spacing * 5) // 6
+
+    for gear in range(1, 7):
+      count = gear_counts.get(gear, gear_counts.get(str(gear), 0))
+      jerk_total = gear_jerks.get(gear, gear_jerks.get(str(gear), 0.0))
+
+      bar_x = chart_x + (gear - 1) * (bar_w + bar_spacing)
+
+      if count > 0:
+        avg_jerk = jerk_total / count
+        # Convert jerk to smoothness score (0-100), lower jerk = higher score
+        # Jerk of 0 = 100, jerk of 5+ = 0
+        smoothness = max(0, min(100, 100 - (avg_jerk * 20)))
+
+        bar_h = int((smoothness / 100) * chart_inner_h)
+        bar_y = chart_y + chart_inner_h - bar_h
+
+        # Color based on smoothness
+        if smoothness >= 80:
+          color = GREEN
+        elif smoothness >= 50:
+          color = YELLOW
+        else:
+          color = RED
+
+        rl.draw_rectangle(int(bar_x), int(bar_y), int(bar_w), int(bar_h), color)
+      else:
+        # No data - draw thin gray bar
+        rl.draw_rectangle(int(bar_x), int(chart_y + chart_inner_h - 2), int(bar_w), 2, GRAY)
+
+      # Gear label
+      gear_label = str(gear)
+      label_x = bar_x + bar_w // 2 - 5
+      rl.draw_text_ex(font_small, gear_label, rl.Vector2(label_x, chart_y + chart_inner_h + 6), 16, 0, WHITE)
+
+    # Legend
+    legend_y = chart_y + chart_inner_h + 28
+    rl.draw_text_ex(font_small, "Green = waddle smooth, Red = jerky jackets. Practice weak gears!", rl.Vector2(x + 15, legend_y), 14, 0, GRAY)
+
+    return y + chart_h
 
   def _measure_content_height(self, rect: rl.Rectangle) -> int:
     """Measure total content height for scrolling"""
@@ -171,14 +469,23 @@ class ManualStatsLayout(NavWidget):
     if not self._stats or self._stats.get('total_drives', 0) == 0:
       return y + 40
 
-    # Overview card
-    y += 50 + 4 * 38 + 15
+    # Overview card (now has 5 items with hand rating, +30 for potential wrap)
+    y += 50 + 5 * 38 + 30 + 15
     # Shift card
     y += 50 + 4 * 38 + 15
     # Launch card
     y += 50 + 3 * 38 + 15
     # Trend card (estimate)
     y += 50 + 3 * 38 + 15
+    # Gear chart
+    if self._stats.get('gear_shift_counts'):
+      y += 180 + 15
+
+    # Charts (3 charts)
+    if self._stats.get('session_history'):
+      y += 200 + 15  # Shift score chart
+      y += 180 + 15  # Stalls/lugs chart
+      y += 180 + 15  # Launch chart
     # Encouragement (estimate 2-3 lines wrapped)
     y += 100
 
@@ -240,27 +547,87 @@ class ManualStatsLayout(NavWidget):
         return "Improving!", GREEN
       return "Getting worse", RED
 
+  def _get_overall_hand(self) -> tuple[str, rl.Color]:
+    """Calculate overall poker hand rating based on all stats"""
+    total_drives = self._stats.get('total_drives', 0)
+    if total_drives == 0:
+      return "No Cards Yet", GRAY
+
+    total_stalls = self._stats.get('total_stalls', 0)
+    total_shifts = self._stats.get('total_upshifts', 0) + self._stats.get('total_downshifts', 0)
+    good_shifts = self._stats.get('upshifts_good', self._stats.get('total_upshifts_good', 0)) + \
+                  self._stats.get('downshifts_good', self._stats.get('total_downshifts_good', 0))
+
+    stall_rate = total_stalls / total_drives
+    shift_pct = (good_shifts / total_shifts * 100) if total_shifts > 0 else 100
+
+    # Calculate overall score
+    score = shift_pct - (stall_rate * 10)
+
+    # Recent improvement bonus
+    recent_scores = self._stats.get('recent_shift_scores', [])
+    if len(recent_scores) >= 3:
+      if recent_scores[-1] > recent_scores[0]:
+        score += 5  # Bonus for improving
+
+    if score >= 98 and stall_rate == 0:
+      return "Royal Flush - Waddle is driving! Kacper threw his glasses!", GREEN
+    elif score >= 95 and stall_rate == 0:
+      return "Royal Flush - Porch-worthy waddle! KP earned!", GREEN
+    elif score >= 90:
+      return "Straight Flush - Elite waddle, CCM vibes!", GREEN
+    elif score >= 85:
+      return "Four of a Kind - Priest-approved waddle!", GREEN
+    elif score >= 80:
+      return "Full House - Solid waddle, not SS!", GREEN
+    elif score >= 70:
+      return "Flush - Good waddle, almost KP", YELLOW
+    elif score >= 60:
+      return "Straight - Improving, not SS yet", YELLOW
+    elif score >= 50:
+      return "Three of a Kind - Getting there, shake off jackets", YELLOW
+    elif score >= 40:
+      return "Two Pair - Jackets territory", YELLOW
+    elif score >= 30:
+      return "One Pair - Jacketed, huge oof", RED
+    else:
+      return "High Card - SS! Full jackets!", RED
+
   def _get_encouragement(self) -> str:
     """Get encouragement based on overall progress"""
     total_drives = self._stats.get('total_drives', 0)
     total_stalls = self._stats.get('total_stalls', 0)
     recent_stalls = self._stats.get('recent_stall_rates', [])
+    recent_scores = self._stats.get('recent_shift_scores', [])
 
     if total_drives == 0:
-      return "Start driving to see your stats!"
+      return "Start driving to see your stats! Time to earn your first waddle KP."
 
     stall_rate = total_stalls / total_drives if total_drives > 0 else 0
+
+    # Check for improvement
+    improving = False
+    if len(recent_scores) >= 3:
+      if recent_scores[-1] > recent_scores[0] + 5:
+        improving = True
 
     if len(recent_stalls) >= 3:
       recent_avg = sum(recent_stalls[-3:]) / 3
       if recent_avg == 0:
-        return "No stalls in recent drives - you're getting the hang of it!"
+        # Check for crazy good performance
+        if len(recent_scores) >= 3 and all(s >= 95 for s in recent_scores[-3:]):
+          return "3 drives 95%+ NO stalls?! Waddle is driving! Kacper threw his glasses!"
+        if improving:
+          return "No stalls AND improving? Waddle energy! QG to KP!"
+        return "No stalls recent - waddle game strong! Not SS, priest-approved!"
       elif recent_avg < stall_rate:
-        return "Your recent drives are better than average - keep it up!"
+        return "Recent drives better than avg - shedding jackets, channeling waddle!"
 
     if stall_rate < 0.5:
-      return "Less than 1 stall per 2 drives on average - nice work!"
+      if improving:
+        return "< 1 stall per 2 drives AND improving! Porch-worthy waddle progress!"
+      return "< 1 stall per 2 drives - solid waddle vibes, not SS!"
     elif stall_rate < 1:
-      return "About 1 stall per drive - you're learning fast!"
+      return "~1 stall per drive - de-jacketing in progress!"
     else:
-      return "Keep practicing! Everyone stalls when learning manual."
+      return "Keep at it! Even the best got jacketed at first. QG to KP!"
