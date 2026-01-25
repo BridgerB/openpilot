@@ -214,43 +214,32 @@ class ManualStatsWidget(Widget):
       cyan = rl.Color(CYAN.r, CYAN.g, CYAN.b, alpha)
       red = rl.Color(RED.r, RED.g, RED.b, alpha)
       white = rl.Color(WHITE.r, WHITE.g, WHITE.b, alpha)
-      gray = rl.Color(GRAY.r, GRAY.g, GRAY.b, alpha)
 
-      # Find lowest gear at redline (don't show gears below it)
-      lowest_redline_gear = 7  # None at redline
-      for gear in range(1, 7):
-        if rpm_for_speed_and_gear(cs.vEgo, gear) >= RPM_REDLINE:
-          lowest_redline_gear = gear
-          break
+      # Calculate both targets first
+      down_rpm = 0
+      up_rpm = 0
+      if self._gear_before_clutch > 1:
+        down_rpm = rpm_for_speed_and_gear(cs.vEgo, self._gear_before_clutch - 1)
+      if self._gear_before_clutch < 6:
+        up_rpm = rpm_for_speed_and_gear(cs.vEgo, self._gear_before_clutch + 1)
 
-      # Show gears with gear numbers (2 adjacent on each side)
-      LUG_RPM = 1500  # Hide gears that would lug or be under idle
-      min_gear = max(1, self._gear_before_clutch - 2)
-      max_gear = min(6, self._gear_before_clutch + 2)
-      for gear in range(min_gear, max_gear + 1):
-        gear_rpm = rpm_for_speed_and_gear(cs.vEgo, gear)
-        if gear_rpm < LUG_RPM:
-          continue  # Would lug or be under idle
-        if gear < lowest_redline_gear and lowest_redline_gear <= 6:
-          continue  # Skip gears below the lowest redline gear
+      # Downshift target - cyan if safe, red if over redline
+      if down_rpm >= RPM_REDLINE:
+        # Over redline - show red warning clipped to right side
+        down_x = x + w
+        rl.draw_rectangle(down_x - 4, bar_y - 5, 4, bar_h + 10, red)
+        rl.draw_text_ex(font, f"{int(round(down_rpm / 10) * 10)}!", rl.Vector2(down_x - 45, bar_y + bar_h + 3), 20, 0, red)
+      elif down_rpm > RPM_TARGET_MIN_DISPLAY:
+        # Safe downshift target (cyan)
+        down_x = x + int(w * (down_rpm / RPM_REDLINE))
+        rl.draw_rectangle(down_x - 2, bar_y - 5, 4, bar_h + 10, cyan)
+        rl.draw_text_ex(font, f"{int(round(down_rpm / 10) * 10)}", rl.Vector2(down_x - 20, bar_y + bar_h + 3), 20, 0, cyan)
 
-        # Choose color based on gear relative to current
-        if gear_rpm >= RPM_REDLINE:
-          # Over redline - red, clipped to right
-          gear_x = x + w
-          color = red
-          rl.draw_rectangle(gear_x - 4, bar_y - 5, 4, bar_h + 10, color)
-          rl.draw_text_ex(font, f"{gear}!", rl.Vector2(gear_x - 18, bar_y + bar_h + 3), 20, 0, color)
-        else:
-          gear_x = x + int(w * (gear_rpm / RPM_REDLINE))
-          if gear == self._gear_before_clutch - 1:
-            color = cyan  # Downshift target
-          elif gear == self._gear_before_clutch + 1:
-            color = white  # Upshift target
-          else:
-            color = gray  # Other gears
-          rl.draw_rectangle(gear_x - 2, bar_y - 5, 4, bar_h + 10, color)
-          rl.draw_text_ex(font, str(gear), rl.Vector2(gear_x - 5, bar_y + bar_h + 3), 20, 0, color)
+      # Upshift target (white) - only show if above minimum display threshold
+      if up_rpm > RPM_TARGET_MIN_DISPLAY and up_rpm < RPM_REDLINE:
+        up_x = x + int(w * (up_rpm / RPM_REDLINE))
+        rl.draw_rectangle(up_x - 2, bar_y - 5, 4, bar_h + 10, white)
+        rl.draw_text_ex(font, f"{int(round(up_rpm / 10) * 10)}", rl.Vector2(up_x - 20, bar_y + bar_h + 3), 20, 0, white)
 
     # RPM text (filtered for smooth display, rounded to nearest 10)
     self._rpm_filter.update(rpm)
