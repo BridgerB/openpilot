@@ -209,6 +209,12 @@ class ManualStatsWidget(Widget):
     suggestion = self._stats.get('shift_suggestion', 'ok')
     show_rev_targets = (cs.clutchPressed or suggestion != 'ok') and self._gear_before_clutch > 0
     if show_rev_targets:
+      # 65% opacity when showing due to suggestion only (not clutch)
+      alpha = 220 if cs.clutchPressed else 143
+      cyan = rl.Color(CYAN.r, CYAN.g, CYAN.b, alpha)
+      red = rl.Color(RED.r, RED.g, RED.b, alpha)
+      white = rl.Color(WHITE.r, WHITE.g, WHITE.b, alpha)
+
       # Calculate both targets first
       down_rpm = 0
       up_rpm = 0
@@ -221,19 +227,19 @@ class ManualStatsWidget(Widget):
       if down_rpm >= RPM_REDLINE:
         # Over redline - show red warning clipped to right side
         down_x = x + w
-        rl.draw_rectangle(down_x - 4, bar_y - 5, 4, bar_h + 10, RED)
-        rl.draw_text_ex(font, f"{int(round(down_rpm / 10) * 10)}!", rl.Vector2(down_x - 45, bar_y + bar_h + 3), 20, 0, RED)
+        rl.draw_rectangle(down_x - 4, bar_y - 5, 4, bar_h + 10, red)
+        rl.draw_text_ex(font, f"{int(round(down_rpm / 10) * 10)}!", rl.Vector2(down_x - 45, bar_y + bar_h + 3), 20, 0, red)
       elif down_rpm > RPM_TARGET_MIN_DISPLAY:
         # Safe downshift target (cyan)
         down_x = x + int(w * (down_rpm / RPM_REDLINE))
-        rl.draw_rectangle(down_x - 2, bar_y - 5, 4, bar_h + 10, CYAN)
-        rl.draw_text_ex(font, f"{int(round(down_rpm / 10) * 10)}", rl.Vector2(down_x - 20, bar_y + bar_h + 3), 20, 0, CYAN)
+        rl.draw_rectangle(down_x - 2, bar_y - 5, 4, bar_h + 10, cyan)
+        rl.draw_text_ex(font, f"{int(round(down_rpm / 10) * 10)}", rl.Vector2(down_x - 20, bar_y + bar_h + 3), 20, 0, cyan)
 
       # Upshift target (white) - only show if above minimum display threshold
       if up_rpm > RPM_TARGET_MIN_DISPLAY and up_rpm < RPM_REDLINE:
         up_x = x + int(w * (up_rpm / RPM_REDLINE))
-        rl.draw_rectangle(up_x - 2, bar_y - 5, 4, bar_h + 10, WHITE)
-        rl.draw_text_ex(font, f"{int(round(up_rpm / 10) * 10)}", rl.Vector2(up_x - 20, bar_y + bar_h + 3), 20, 0, WHITE)
+        rl.draw_rectangle(up_x - 2, bar_y - 5, 4, bar_h + 10, white)
+        rl.draw_text_ex(font, f"{int(round(up_rpm / 10) * 10)}", rl.Vector2(up_x - 20, bar_y + bar_h + 3), 20, 0, white)
 
     # RPM text (filtered for smooth display, rounded to nearest 10)
     self._rpm_filter.update(rpm)
