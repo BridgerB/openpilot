@@ -2,6 +2,7 @@
 import os
 import time
 import numpy as np
+from enum import IntEnum
 from cereal import log
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.realtime import DT_MDL
@@ -21,8 +22,6 @@ MODEL_NAME = 'long'
 LONG_MPC_DIR = os.path.dirname(os.path.abspath(__file__))
 EXPORT_DIR = os.path.join(LONG_MPC_DIR, "c_generated_code")
 JSON_FILE = os.path.join(LONG_MPC_DIR, "acados_ocp_long.json")
-
-SOURCES = ['lead0', 'lead1']
 
 X_DIM = 3
 U_DIM = 1
@@ -55,6 +54,15 @@ T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0
 MIN_X_LEAD_FACTOR = 0.5
+
+
+class Source(IntEnum):
+  CRUISE = 0
+  LEAD0 = 1
+  LEAD1 = 2
+  LEAD2 = 3
+  E2E = 4
+
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
@@ -215,7 +223,7 @@ class LongitudinalMpc:
     self.dt = dt
     self.solver = AcadosOcpSolverCython(MODEL_NAME, ACADOS_SOLVER_TYPE, N)
     self.reset()
-    self.lead_source = SOURCES[0]
+    self.lead_source = Source.LEAD0
 
   def reset(self):
     self.solver.reset()
@@ -325,7 +333,7 @@ class LongitudinalMpc:
     lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
 
     x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle])
-    self.lead_source = SOURCES[np.argmin(x_obstacles[0])]
+    self.lead_source = Source._value2member_map_.get(np.argmin(x_obstacles[0]))
 
     self.yref[:,:] = 0.0
     for i in range(N):
