@@ -333,7 +333,8 @@ class LongitudinalMpc:
     lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
 
     x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle])
-    self.lead_source = Source._value2member_map_.get(np.argmin(x_obstacles[0]))
+    lead_idx = np.argmin(x_obstacles[0])
+    self.lead_source = Source.LEAD0 if lead_idx == 0 else Source.LEAD1
 
     self.yref[:,:] = 0.0
     for i in range(N):

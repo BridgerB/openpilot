@@ -239,7 +239,7 @@ def ui_thread(addr):
       ("ENABLED", GREEN if sm['selfdriveState'].enabled else BLACK),
       ("SPEED: " + str(round(sm['carState'].vEgo, 1)) + " m/s", YELLOW),
       ("LONG CONTROL STATE: " + str(sm['controlsState'].longControlState), YELLOW),
-      ("LONG MPC SOURCE: " + str(sm['longitudinalPlan'].longitudinalPlanSource), YELLOW),
+      ("LONG MPC SOURCE: " + str(sm['longitudinalPlan'].longitudinalPlanSource.name), YELLOW),
       None,
       ("ANGLE OFFSET (AVG): " + str(round(sm['liveParameters'].angleOffsetAverageDeg, 2)) + " deg", YELLOW),
       ("ANGLE OFFSET (INSTANT): " + str(round(sm['liveParameters'].angleOffsetDeg, 2)) + " deg", YELLOW),
