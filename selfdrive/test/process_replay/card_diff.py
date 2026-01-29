@@ -9,6 +9,9 @@ from openpilot.tools.lib.logreader import LogReader
 from openpilot.selfdrive.test.process_replay.process_replay import (
   replay_process, get_process_config,
 )
+from openpilot.selfdrive.test.process_replay.compare_logs import (
+  compare_logs,
+)
 
 CARD_CFG = get_process_config("card")
 
@@ -39,9 +42,15 @@ def main():
     return 0
 
   ref = pickle.loads(Path(args.ref).read_bytes()) if args.ref.endswith(".pkl") else run_card(args.ref)
-  print(f"Ref: {len(ref)} msgs")
 
-  return 0
+  diffs = compare_logs(ref, new, ignore_fields=CARD_CFG.ignore, tolerance=CARD_CFG.tolerance)
+
+  if not diffs:
+    print("PASS: no diffs")
+    return 0
+
+  print(f"\n{len(diffs)} diffs")
+  return 1
 
 
 if __name__ == "__main__":
